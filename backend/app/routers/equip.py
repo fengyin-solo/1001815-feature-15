@@ -5,8 +5,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.equip import EquipService
+from app.schemas import ActionResult, EntryPayload, EquipPageResult
+from app.services.equip import (
+    DEFAULT_SIZE,
+    DEFAULT_SORT,
+    SORT_BY_CODE,
+    SORT_BY_NEXT_MAINT,
+    SORT_OPTIONS,
+    EquipService,
+)
 
 router = APIRouter(prefix="/api/equip", tags=["养护机械"])
 
@@ -16,22 +23,59 @@ LIST_FIELDS = ["机械编号", "机械名称", "机械型号", "停放场地", "
 STATUSES = ["待保养", "可用", "保养中", "已报废"]
 
 
-@router.get("", response_model=PageResult[dict])
-def list_entries(
-    keyword: str | None = Query(default=None, description="按机械编号检索"),
-    status: str | None = Query(default=None, description="待保养、可用、保养中、已报废"),
-    page: int = 1,
-    size: int = 20,
-) -> PageResult[dict]:
-    """按机械编号与状态过滤养护机械列表；没有数据时返回空页，不报错。"""
+def _query(
+    keyword: str | None,
+    status: str | None,
+    sort: str,
+    page: int,
+    size: int,
+) -> dict[str, Any]:
+    if sort not in SORT_OPTIONS:
+        raise HTTPException(status_code=400, detail="排序方式仅支持按机械编号或按下次保养日")
+    if page < 1:
+        raise HTTPException(status_code=400, detail="页码必须从 1 开始")
+    if size < 1:
+        raise HTTPException(status_code=400, detail="每页条数不能小于 1")
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
-    items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
-    return PageResult(items=items, total=total, page=page, size=size)
+    return service.query_entries(keyword=keyword, status=status, sort=sort, page=page, size=size)
+
+
+@router.get("", response_model=EquipPageResult)
+def list_entries(
+    keyword: str | None = Query(default=None, description="按机械编号、名称、型号检索"),
+    status: str | None = Query(default=None, description="待保养、可用、保养中、已报废"),
+    sort: str = Query(default=DEFAULT_SORT, description=f"{SORT_BY_CODE}=按机械编号；{SORT_BY_NEXT_MAINT}=按下次保养日由近到远"),
+    page: int = 1,
+    size: int = DEFAULT_SIZE,
+) -> dict[str, Any]:
+    """养护机械台账：排序、报废拆分与分页规则全部来自 EquipService.query_entries。"""
+    return _query(keyword, status, sort, page, size)
+
+
+@router.get("/reminders", response_model=EquipPageResult)
+def list_reminders(
+    keyword: str | None = Query(default=None, description="按机械编号、名称、型号检索"),
+    status: str | None = Query(default=None, description="待保养、可用、保养中、已报废"),
+    sort: str = Query(default=DEFAULT_SORT, description=f"{SORT_BY_CODE}=按机械编号；{SORT_BY_NEXT_MAINT}=按下次保养日由近到远"),
+    page: int = 1,
+    size: int = DEFAULT_SIZE,
+) -> dict[str, Any]:
+    """保养提醒清单：与台账共用同一套排序、收起与分页口径，只额外标注提醒分级。"""
+    payload = _query(keyword, status, sort, page, size)
+    return service.with_reminders(payload)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出养护机械清单：在统一取数口径上合并在册与已报废机械，导出全量数据。"""
+    payload = service.query_entries(page=1, size=10000)
+    items = list(payload["items"]) + list(payload["retired_items"])
+    return {"module": "equip", "total": payload["total"] + payload["retired_total"], "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
-def get_entry(entry_id: int) -> dict:
+def get_entry(entry_id: int) -> dict[str, Any]:
     """读取单条养护机械明细；不存在时给出可读的错误说明。"""
     entry = service.get_entry(entry_id)
     if entry is None:
@@ -56,10 +100,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出养护机械清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "equip", "total": total, "items": items}

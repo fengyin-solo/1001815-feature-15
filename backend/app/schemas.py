@@ -15,6 +15,20 @@ class PageResult(BaseModel, Generic[T]):
     size: int = 20
 
 
+class EquipPageResult(BaseModel):
+    """养护机械取数结果：在册分页 + 已报废整段（默认收起、可主动展开）。"""
+
+    items: list[dict[str, Any]]
+    total: int
+    page: int
+    size: int
+    total_pages: int
+    sort: str
+    retired_items: list[dict[str, Any]]
+    retired_total: int
+    status_counts: dict[str, int]
+
+
 class ActionResult(BaseModel):
     ok: bool
     message: str
